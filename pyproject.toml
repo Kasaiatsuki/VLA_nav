@@ -67,6 +67,9 @@ dependencies = [
     "openai-clip"
 ]
 
+[project.scripts]
+vla_nav_node = "inference.vla_nav_node:main"
+
 [project.optional-dependencies]
 dev = [
     "black>=24.2.0",

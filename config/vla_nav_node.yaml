@@ -1,0 +1,6 @@
+vla_nav_node:
+  ros__parameters:
+    lan_prompt: "move forward with without hitting the wall"
+    interval_ms: 333
+    is_autonomous: false
+    # model_path: "" # 必要に応じて上書き可能
