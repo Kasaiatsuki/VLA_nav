@@ -41,7 +41,7 @@ def load_model(
             mha_num_attention_layers=config["mha_num_attention_layers"],
             mha_ff_dim_factor=config["mha_ff_dim_factor"],
         )  
-        text_encoder, preprocess = clip.load(config["clip_type"])    
+        text_encoder, preprocess = clip.load(config["clip_type"], device=device)    
         text_encoder.to(torch.float32)    
     else:
         raise ValueError(f"Invalid model type: {model_type}")
@@ -59,6 +59,7 @@ def load_model(
             state_dict = loaded_model.state_dict()
             model.load_state_dict(state_dict, strict=False)
     
+    model.to(device)
     return model, text_encoder, preprocess
 
 def transform_images_PIL_mask(pil_imgs: List[PILImage.Image], mask) -> torch.Tensor:
