@@ -8,3 +8,16 @@ vla_nav_node:
     linear_vel_max: 0.3
     angular_vel_max: 0.3
     model_path: "/home/orne/kasai_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
+    model_type: "omnivla-edge"
+    len_traj_pred: 8
+    learn_angle: true
+    context_size: 5
+    obs_encoder: "efficientnet-b0"
+    encoding_size: 256
+    obs_encoding_size: 1024
+    goal_encoding_size: 1024
+    late_fusion: false
+    mha_num_attention_heads: 4
+    mha_num_attention_layers: 4
+    mha_ff_dim_factor: 4
+    clip_type: "ViT-B/32"

@@ -78,20 +78,34 @@ class VlaNavNode(Node):
             self.zed_camera = None
 
         # --- OmniVLA-edge モデル用設定 ---
+        self.declare_parameter('model_type', 'omnivla-edge')
+        self.declare_parameter('len_traj_pred', 8)
+        self.declare_parameter('learn_angle', True)
+        self.declare_parameter('context_size', 5)
+        self.declare_parameter('obs_encoder', 'efficientnet-b0')
+        self.declare_parameter('encoding_size', 256)
+        self.declare_parameter('obs_encoding_size', 1024)
+        self.declare_parameter('goal_encoding_size', 1024)
+        self.declare_parameter('late_fusion', False)
+        self.declare_parameter('mha_num_attention_heads', 4)
+        self.declare_parameter('mha_num_attention_layers', 4)
+        self.declare_parameter('mha_ff_dim_factor', 4)
+        self.declare_parameter('clip_type', 'ViT-B/32')
+
         self.model_params = {
-            "model_type": "omnivla-edge",
-            "len_traj_pred": 8,
-            "learn_angle": True,
-            "context_size": 5,
-            "obs_encoder": "efficientnet-b0",
-            "encoding_size": 256,
-            "obs_encoding_size": 1024,
-            "goal_encoding_size": 1024,
-            "late_fusion": False,
-            "mha_num_attention_heads": 4,
-            "mha_num_attention_layers": 4,
-            "mha_ff_dim_factor": 4,
-            "clip_type": "ViT-B/32"
+            "model_type": self.get_parameter('model_type').value,
+            "len_traj_pred": self.get_parameter('len_traj_pred').value,
+            "learn_angle": self.get_parameter('learn_angle').value,
+            "context_size": self.get_parameter('context_size').value,
+            "obs_encoder": self.get_parameter('obs_encoder').value,
+            "encoding_size": self.get_parameter('encoding_size').value,
+            "obs_encoding_size": self.get_parameter('obs_encoding_size').value,
+            "goal_encoding_size": self.get_parameter('goal_encoding_size').value,
+            "late_fusion": self.get_parameter('late_fusion').value,
+            "mha_num_attention_heads": self.get_parameter('mha_num_attention_heads').value,
+            "mha_num_attention_layers": self.get_parameter('mha_num_attention_layers').value,
+            "mha_ff_dim_factor": self.get_parameter('mha_ff_dim_factor').value,
+            "clip_type": self.get_parameter('clip_type').value
         }
 
         self.imgsize = (96, 96)

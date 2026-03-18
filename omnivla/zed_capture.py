@@ -32,9 +32,9 @@ class ZedCameraWrapper:
             raise RuntimeError(f"Failed to open ZED camera: {err}")
 
     def grab_image(self) -> Optional[np.ndarray]:
-        """最新のカメラ画像(左目)をBGR形式(3ch)かつリサイズ済み(640x360)で取得して返す"""
+        """最新のカメラ画像(右目)をBGR形式(3ch)かつリサイズ済み(640x360)で取得して返す"""
         if self.camera.grab(self.runtime_params) == sl.ERROR_CODE.SUCCESS:
-            self.camera.retrieve_image(self.zed_image, sl.VIEW.LEFT)
+            self.camera.retrieve_image(self.zed_image, sl.VIEW.RIGHT)
             image = self.zed_image.get_data()
             if image is None: return None
             
