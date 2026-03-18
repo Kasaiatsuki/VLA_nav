@@ -13,9 +13,11 @@
 ### 1. ワークスペースのビルド
 追加された各種ノードを ROS2 に認識させるため、ビルドを実行します。
 ```bash
+conda activate omnivla_foxy
 cd ~/ros2_ws
-colcon build --symlink-install
+colcon build --packages-select omnivla
 source install/setup.bash
+sed -i '1s|.*|#!/usr/bin/env python3|' ~/kasai_ws/install/omnivla/lib/omnivla/vla_nav_node
 ```
 
 ### 2. 目標画像（パンくず）の撮影・保存
