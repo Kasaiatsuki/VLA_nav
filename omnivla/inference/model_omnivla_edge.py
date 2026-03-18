@@ -6,10 +6,14 @@ from typing import List, Dict, Optional, Tuple
 from efficientnet_pytorch import EfficientNet
 
 class PositionalEncoding(nn.Module):
+    """
+    Transformerモデルに対して、入力データ（画像や言語のトークン）の「順序」や「位置」の情報を教えるためのモジュール。
+    サイン波とコサイン波を使って位置エンコーディングを生成し、入力ベクトルに足し合わせる。
+    """
     def __init__(self, d_model, max_seq_len=6):
         super().__init__()
 
-        # Compute the positional encoding once
+        # 計算済みの位置エンコーディングを保持しておく
         pos_enc = torch.zeros(max_seq_len, d_model)
         pos = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
@@ -27,6 +31,10 @@ class PositionalEncoding(nn.Module):
         return x
 
 class MultiLayerDecoder_mask3(nn.Module):
+    """
+    マルチモーダル（画像・言語・地図・座標など）な特徴量を統合して、最終的なロボットの動きを予測するメインのTransformerデコーダー。
+    Self-Attention（自己注意機構）を使って「今どの情報に注目すべきか」を判断する。
+    """
     def __init__(self, embed_dim=512, seq_len=6, output_layers=[256, 128, 64], nhead=8, num_layers=8, ff_dim_factor=4):
         super(MultiLayerDecoder_mask3, self).__init__()
         self.positional_encoding = PositionalEncoding(embed_dim, max_seq_len=seq_len)
@@ -82,6 +90,10 @@ class BaseModel(nn.Module):
  
 
 class OmniVLA_edge(BaseModel):
+    """
+    OmniVLAのエッジデバイス（計算資源が限られたロボット等）向け軽量モデル。
+    EfficientNetを使って画像を処理し、Transformerデコーダーで経路を予測する。
+    """
     def __init__(
         self,
         context_size: int = 5,
@@ -132,11 +144,13 @@ class OmniVLA_edge(BaseModel):
             self.compress_goal_enc_img = nn.Identity()
            
         self.num_goal_features_lan = 4096
+        # CLIPから得た言語特徴量を、システム共通の次元サイズ(goal_encoding_size)に圧縮・変換する層
         if self.num_goal_features_lan != self.goal_encoding_size:
             self.compress_goal_enc_lan = nn.Linear(self.num_goal_features_lan, self.goal_encoding_size) #clip feature
         else:
             self.compress_goal_enc_lan = nn.Identity()
         
+        # すべての特徴量を統合して推論するTransformerレイヤー
         self.decoder = MultiLayerDecoder_mask3(
             embed_dim=self.obs_encoding_size,
             seq_len=self.context_size+2+1+1+1,
@@ -146,10 +160,12 @@ class OmniVLA_edge(BaseModel):
             ff_dim_factor=mha_ff_dim_factor,
         )
         
+        # Transformerの出力から最終的なアクション（軌道予測）を計算する層
         self.action_predictor = nn.Sequential(
             nn.Linear(32, self.len_trajectory_pred * self.num_action_params),            
         )
         
+        # 言語による指示を画像特徴量に直接埋め込むためのFiLMネットワーク
         self.film_model = build_film_model(8, 10, 128, 512)
                
         self.max_linvel = 0.5
@@ -162,6 +178,8 @@ class OmniVLA_edge(BaseModel):
             nn.Linear(4, self.goal_encoding_size),         
         )           
                
+        # 各種入力モード（言語のみ、画像ナビ、地図ナビ等）に応じた「無視する入力（マスク）」を定義
+        # 例：画像ナビモード（ID:6）のときは、言語や地図の入力口を塞ぐ（Trueにする）ための設定群
         self.goal_mask_0 = torch.zeros((1, self.context_size + 5), dtype=torch.bool)
         self.goal_mask_0[:, -4] = True 
         self.goal_mask_0[:, -2] = True 
@@ -210,9 +228,13 @@ class OmniVLA_edge(BaseModel):
     def forward(
         self, obs_img: torch.tensor, goal_pose: torch.tensor, map_images: torch.tensor, goal_img: torch.tensor, goal_mask: torch.tensor, feat_text: torch.tensor, current_img: torch.tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        モデルのメイン推論ステップ（順伝播）。
+        現在の景色や言語指示などの入力を受け取り、処理してアクション（軌道）を返す。
+        """
 
-        # Get the goal encoding
-        # text feature
+        # --- 1. 言語特徴と画像特徴の融合（FiLM） ---
+        # text feature (feat_text) を、現在のメイン画像(current_img)の特徴抽出に直接介入させて融合する
         inst_encoding = feat_text
         obsgoal_encoding_lan = self.film_model(current_img, inst_encoding)        
         obsgoal_encoding_lan_cat = obsgoal_encoding_lan.flatten(start_dim=1)
@@ -223,6 +245,7 @@ class OmniVLA_edge(BaseModel):
         assert obsgoal_encoding_lan.shape[2] == self.goal_encoding_size
         goal_encoding_lan = obsgoal_encoding_lan   
                 
+        # --- 2. 目標画像のエンコード ---
         if self.late_fusion:
             goal_encoding_img = self.goal_encoder_img.extract_features(goal_img)
         else:
@@ -238,6 +261,7 @@ class OmniVLA_edge(BaseModel):
             goal_encoding_img = goal_encoding_img.unsqueeze(1)
         assert goal_encoding_img.shape[2] == self.goal_encoding_size
         
+        # --- 3. 座標（GPS等）と地図画像（航空写真）のエンコード ---
         device = obs_img.get_device()
         goal_encoding = self.local_goal(goal_pose).unsqueeze(1)
         map_encoding = self.goal_encoder.extract_features(map_images).unsqueeze(1)
@@ -246,6 +270,7 @@ class OmniVLA_edge(BaseModel):
         obs_img = torch.split(obs_img, 3, dim=1)
         obs_img = torch.concat(obs_img, dim=0)
 
+        # --- 4. 過去〜現在までの景色（コンテキスト）のエンコード ---
         # get the observation encoding
         obs_encoding = self.obs_encoder.extract_features(obs_img)
         # currently the size is [batch_size*(self.context_size + 1), 1280, H/32, W/32]
@@ -265,16 +290,22 @@ class OmniVLA_edge(BaseModel):
         obs_encoding = obs_encoding.reshape((self.context_size+1, -1, self.obs_encoding_size))
         obs_encoding = torch.transpose(obs_encoding, 0, 1)
 
+        # --- 5. 全特徴量の統合とデコーダー（Transformer）への入力 ---
         # concatenate the goal encoding to the observation encoding
+        # (景色、座標、地図、目標画像、言葉の全ての特徴量をまとめる)
         tokens = torch.cat((obs_encoding, goal_encoding, map_encoding.unsqueeze(1), goal_encoding_img, goal_encoding_lan), dim=1)
+        
+        # 選ばれたモード（ID）に従って、使用しない情報を隠すマスクを適用
         if goal_mask is not None:
             no_goal_mask = goal_mask.long()
             src_key_padding_mask = torch.index_select(self.all_masks.to(device), 0, no_goal_mask)
         else:
             src_key_padding_mask = None  
         
+        # Transformerで計算を実行
         final_repr = self.decoder(tokens, src_key_padding_mask, self.avg_pool_mask.to(device), no_goal_mask)
 
+        # 最終的なアクション（Waypoints軌道束）と距離予測を出力
         action_pred = self.action_predictor(final_repr)
         dist_pred = self.dist_predictor(final_repr)
         
@@ -328,6 +359,11 @@ class IntermediateFeatureExtractor(nn.Module):
 
         
 class FiLMTransform(nn.Module):
+    """
+    FiLM (Feature-wise Linear Modulation) モジュール。
+    言語情報から生成されたパラメータ（gamma, beta）を使って、画像の特徴マップに
+    「今探している言葉の特徴」を直接強調・抑制する形で掛け算と足し算を行う。
+    """
     def __init__(self):
         super(FiLMTransform, self).__init__()
         
@@ -390,6 +426,11 @@ class FinalClassifier(nn.Module):
         return x, feature_map        
 
 class FiLMNetwork(nn.Module):
+    """
+    メインとなるFiLMネットワーク全体。
+    入力された画像（x）に対し、入力された言語（question）からFiLMパラメータを動的に生成し、
+    それを各レイヤーの画像処理に介入させて「言葉に応じた画像特徴」を抽出する。
+    """
     def __init__(self, num_res_blocks, num_classes, num_channels, question_dim):
         super(FiLMNetwork, self).__init__()
         question_feature_dim = question_dim
