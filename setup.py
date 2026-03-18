@@ -23,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'vla_nav_node = omnivla.inference.vla_nav_node:main',
+            'topological_manager_node = omnivla.inference.topological_manager_node:main',
         ],
     },
 )

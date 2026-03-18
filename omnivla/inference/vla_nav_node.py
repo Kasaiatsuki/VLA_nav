@@ -133,6 +133,10 @@ class VlaNavNode(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
+        
+        # 視覚ナビゲーション用のゴール画像を受け取る
+        self.current_goal_image = None
+        self.create_subscription(Image, '/goal_image', self._goal_image_callback, 1)
 
         self.timer = self.create_timer(interval_ms / 1000.0, self.timer_callback)
 
@@ -144,6 +148,16 @@ class VlaNavNode(Node):
     def _lan_prompt_callback(self, msg: String) -> None:
         self.lan_prompt = msg.data
         self.get_logger().info(f'Language prompt updated to: {self.lan_prompt}')
+
+    def _goal_image_callback(self, msg: Image) -> None:
+        try:
+            # トピックから受け取った画像をRGB形式に変換して、モデルに合うサイズにリサイズ
+            cv_img = self.bridge.imgmsg_to_cv2(msg, "rgb8")
+            pil_img = PILImage.fromarray(cv_img).resize(self.imgsize)
+            self.current_goal_image = pil_img
+            self.get_logger().info('Received a new visual goal image! Switching to mode 6.')
+        except Exception as e:
+            self.get_logger().error(f"Failed to process goal image: {e}")
 
     def timer_callback(self) -> None:
         if not self.is_autonomous or self.model is None or self.zed_camera is None:
@@ -184,9 +198,15 @@ class VlaNavNode(Node):
         obj_inst_lan = clip.tokenize(self.lan_prompt, truncate=True).to(self.device)
         
         goal_pose_dummy = torch.zeros((1, 4)).to(self.device)
-        goal_image_dummy = transform_images_PIL_mask(image_96, self.mask_360_pil_96).to(self.device)
         
-        modality_id = torch.tensor([7]).to(self.device)
+        # ゴール画像がROSから送られてきていれば、視覚ナビモード(ID:6)としてその目標写真を使う
+        if self.current_goal_image is not None:
+            goal_image_tensor = transform_images_PIL_mask(self.current_goal_image, self.mask_360_pil_96).to(self.device)
+            modality_id = torch.tensor([6]).to(self.device)
+        else:
+            # そうでなければ従来の言語ナビモード(ID:7)として、ダミー画像とプロンプトを使う
+            goal_image_tensor = transform_images_PIL_mask(image_96, self.mask_360_pil_96).to(self.device)
+            modality_id = torch.tensor([7]).to(self.device)
         
         # 4. 推論実行
         with torch.no_grad():
@@ -195,7 +215,7 @@ class VlaNavNode(Node):
                 obs_images_cat, 
                 goal_pose_dummy, 
                 map_images, 
-                goal_image_dummy, 
+                goal_image_tensor, 
                 modality_id, 
                 feat_text, 
                 cur_large_img
