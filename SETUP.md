@@ -21,4 +21,12 @@ pip install -e .
 pip install packaging ninja
 ninja --version; echo $?  # Verify Ninja --> should return exit code "0"
 pip install "flash-attn==2.5.5" --no-build-isolation
+
+conda activate omnivla_foxy
+cd ~/kasai_ws
+colcon build --packages-select omnivla
+source install/setup.bash
+sed -i '1s|.*|#!/usr/bin/env python3|' ~/kasai_ws/install/omnivla/lib/omnivla/vla_nav_node
+ros2 launch omnivla vla_nav.launch.py
+
 ```
