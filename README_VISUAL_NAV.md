@@ -18,6 +18,7 @@ cd ~/ros2_ws
 colcon build --packages-select omnivla
 source install/setup.bash
 sed -i '1s|.*|#!/usr/bin/env python3|' ~/kasai_ws/install/omnivla/lib/omnivla/vla_nav_node
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libffi.so.7
 ```
 
 ### 2. 目標画像（パンくず）の撮影・保存
@@ -36,7 +37,7 @@ sed -i '1s|.*|#!/usr/bin/env python3|' ~/kasai_ws/install/omnivla/lib/omnivla/vl
 
 1. **推論ノード（メイン）の起動:**
    ```bash
-   ros2 run omnivla vla_nav_node
+   ros2 launch omnivla vla_nav_node.launch.py
    ```
    （起動直後はデフォルトの言語モードで待機します）
 

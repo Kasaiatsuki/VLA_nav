@@ -21,3 +21,8 @@ vla_nav_node:
     mha_num_attention_layers: 4
     mha_ff_dim_factor: 4
     clip_type: "ViT-B/32"
+
+topological_manager_node:
+  ros__parameters:
+    goal_images_dir: "/home/orne/kasai_ws/install/omnivla/lib/python3.8/site-packages/omnivla/inference/goal_images_3f"
+    similarity_threshold: 80

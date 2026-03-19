@@ -131,6 +131,7 @@ class VlaNavNode(Node):
 
         # --- Publisher / Subscriber ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.image_pub = self.create_publisher(Image, '/image_raw', 10) # 他のノードへの画像共有用
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
         
@@ -160,12 +161,22 @@ class VlaNavNode(Node):
             self.get_logger().error(f"Failed to process goal image: {e}")
 
     def timer_callback(self) -> None:
-        if not self.is_autonomous or self.model is None or self.zed_camera is None:
+        if self.zed_camera is None:
             return
 
         # 1. 画像の取得
         cv_image = self.zed_camera.grab_image()
         if cv_image is None:
+            return
+        
+        # 1.5 他のノード（topological_manager等）に現在の画像を共有
+        try:
+            img_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
+            self.image_pub.publish(img_msg)
+        except Exception as e:
+            self.get_logger().error(f"Failed to publish image: {e}")
+
+        if not self.is_autonomous or self.model is None:
             return
         
         # 2. 画像の前処理
