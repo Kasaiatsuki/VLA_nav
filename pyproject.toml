@@ -13,7 +13,7 @@ authors = [
 description = "OmniVLA: An Omni-Modal Vision-Language-Action Model for Robot Navigation"
 version = "0.0.1"
 readme = "README.md"
-requires-python = ">=3.8"
+
 keywords = ["vision-language-action model", "vision-based navigation", "robot learning"]
 license = {file = "LICENSE"}
 classifiers = [

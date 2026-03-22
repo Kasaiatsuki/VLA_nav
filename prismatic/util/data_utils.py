@@ -220,8 +220,11 @@ class PaddedCollatorForActionPrediction:
                 pixel_values = torch.cat((torch.stack(pixel_values), torch.stack(pixel_values_goal)), dim=1)
             else:
                 pixel_values = torch.stack(pixel_values)
+        elif isinstance(pixel_values[0], dict):
+            # DinoSigLIP dual-backbone: pixel_values is a dict of {key: tensor}
+            pixel_values = {k: torch.stack([pv[k] for pv in pixel_values]) for k in pixel_values[0]}
         else:
-            raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
+            raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values[0])}")
 
         # Stack all actions
         actions = [torch.from_numpy(np.copy(instance["actions"])) for instance in instances]

@@ -1,0 +1,2 @@
+bash ~/kasai_ws/src/VLA_nav/fix_entry_points.sh
+

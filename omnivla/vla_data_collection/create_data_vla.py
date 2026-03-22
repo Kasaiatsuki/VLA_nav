@@ -17,7 +17,10 @@ from typing import Optional, List, Tuple
 
 # 注意: このスクリプトは omnivla/vla_data_collection ディレクトリに配置される想定です。
 # 同じディレクトリにある zed_capture_vla.py からインポートします。
-from zed_capture_vla import ZedCameraWrapperVLA
+try:
+    from omnivla.vla_data_collection.zed_capture_vla import ZedCameraWrapperVLA
+except ImportError:
+    from zed_capture_vla import ZedCameraWrapperVLA
 
 # サンプリング間隔(秒)。VLAの場合はもう少し早くても良い(例: 0.1秒)
 SAMPLE_INTERVAL = 0.1
@@ -92,7 +95,16 @@ class DataCollectionNodeVLA(Node):
 
         self.get_logger().info('🔵Processing buffer into trajectories...')
         
-        package_root = Path(__file__).parent.parent.parent
+        # データは常に VLA_nav/data/ 以下に保存する（インストールディレクトリではなくソースを使う）
+        package_root = Path(__file__).resolve()
+        # インストール済み or ソース直接どちらでも VLA_nav のルートを見つける
+        for parent in package_root.parents:
+            if (parent / "vla-scripts").exists():
+                package_root = parent
+                break
+        else:
+            # フォールバック: カレントディレクトリ
+            package_root = Path.cwd()
         data_base_dir = package_root / 'data'
         timestamp = time.strftime('%Y%m%d_%H%M%S')
         dataset_dir = data_base_dir / f'vla_{timestamp}_dataset'
