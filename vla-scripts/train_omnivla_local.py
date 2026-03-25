@@ -60,6 +60,7 @@ class LocalTrainingConfig:
     
     # 出力先
     output_dir: str = "checkpoints"             # 学習後のモデルを保存するフォルダ
+    resume_from_checkpoint: Optional[str] = None  # 追加: チェックポイントから再開する場合のフォルダパス
 
 @draccus.wrap()
 def train(cfg: LocalTrainingConfig):
@@ -72,12 +73,14 @@ def train(cfg: LocalTrainingConfig):
 
     # TensorBoard のライター初期化（実行ごとにユニークなフォルダを作成）
     from datetime import datetime
-    current_time = datetime.now().strftime('%b%d_%H-%M-%S')
-    tb_log_dir = Path(cfg.output_dir) / cfg.run_id / "tensorboard" / current_time
-    writer = SummaryWriter(log_dir=str(tb_log_dir))
+    writer = None
     if accelerator.is_main_process:
+        from torch.utils.tensorboard import SummaryWriter
+        current_time = datetime.now().strftime('%Y%m%d-%H%M%S')
+        tb_log_dir = Path(cfg.output_dir) / cfg.run_id / "tensorboard" / current_time
+        writer = SummaryWriter(log_dir=str(tb_log_dir), flush_secs=10)
         print(f"TensorBoard logs: {tb_log_dir}")
-        print(f"  → 表示コマンド: tensorboard --logdir {tb_log_dir}")
+        print(f"  → 全体の確認コマンド: tensorboard --logdir {Path(cfg.output_dir) / cfg.run_id / 'tensorboard'}")
     
     # 2. VLAモデルとプロセッサのロード
     # load_vla は指定されたパスから Hugging Face のモデルをダウンロード/読み込みます
@@ -131,7 +134,7 @@ def train(cfg: LocalTrainingConfig):
         batch_size=cfg.batch_size,
         shuffle=True,                  # データの順番をシャッフルする
         collate_fn=collator,
-        num_workers=0,                 # スモークテストのため 0 に下げて VRAM の余裕を確保
+        num_workers=0,
     )
 
     # 4. オプティマイザ (最適化手法) と スケジューラ (学習率の変化) の設定
@@ -157,6 +160,33 @@ def train(cfg: LocalTrainingConfig):
     # モデルは手動でデバイスに合わせる（既に CUDA にあるはずですが念のため）
     model = model.to(device)
 
+    # 5.5 チェックポイントからの再開
+    step = 0
+    if cfg.resume_from_checkpoint is not None:
+        if accelerator.is_main_process:
+            print(f"Loading checkpoint from {cfg.resume_from_checkpoint}...")
+        
+        # モデルの重みが保存されている場合は読み込む (PEFT/LoRA)
+        checkpoint_path = Path(cfg.resume_from_checkpoint)
+        if (checkpoint_path / "adapter_model.bin").exists() or (checkpoint_path / "adapter_model.safetensors").exists():
+            if accelerator.is_main_process:
+                print(f"  -> Loading adapter weights...")
+            # model.load_adapter は PEFT モデルに新しいアダプターをロードします
+            model.load_adapter(cfg.resume_from_checkpoint)
+        
+        # オプティマイザやスケジューラの状態を復元
+        accelerator.load_state(cfg.resume_from_checkpoint)
+        
+        # ステップ数をフォルダ名から抽出 (例: "checkpoint-1900" -> 1900)
+        try:
+            step = int(checkpoint_path.name.split("-")[-1])
+            if accelerator.is_main_process:
+                print(f"  -> Resuming from step {step}")
+        except (ValueError, IndexError):
+            if accelerator.is_main_process:
+                print(f"  -> Could not parse step number from {checkpoint_path.name}, starting from 0")
+            step = 0
+
     # 6. 学習ループ
     model.train()
     print(f"Starting training for {cfg.max_steps} steps...")
@@ -166,7 +196,6 @@ def train(cfg: LocalTrainingConfig):
     gc.collect()
     torch.cuda.empty_cache()
     
-    step = 0
     while step < cfg.max_steps:
         for batch in train_loader:
             if step >= cfg.max_steps: break
@@ -196,25 +225,35 @@ def train(cfg: LocalTrainingConfig):
                 lr_scheduler.step()    # 学習率の更新
                 optimizer.zero_grad()  # 蓄積された勾配をリセット
                 
-                # 進捗の表示（メインプロセスのみ）
-                if accelerator.is_main_process:
-                    if step % 10 == 0:
-                        loss_val = loss.item()
-                        lr_val = lr_scheduler.get_last_lr()[0]
-                        print(f"Step {step}: Loss = {loss_val:.4f}")
-                        # TensorBoard にロスと学習率を記録
-                        writer.add_scalar("train/loss", loss_val, step)
-                        writer.add_scalar("train/learning_rate", lr_val, step)
-                        
-                    # 定期的なモデルの保存
-                    if step > 0 and step % cfg.save_steps == 0:
-                        save_path = Path(cfg.output_dir) / cfg.run_id / f"checkpoint-{step}"
-                        accelerator.save_state(save_path)
-                        print(f"Saved checkpoint to {save_path}")
+                # ここから重要：実際に重みの更新が行われた際のみ実行
+                if accelerator.sync_gradients:
+                    step += 1
+                    
+                    # 進捗の表示（メインプロセスのみ）
+                    if accelerator.is_main_process:
+                        if step % 10 == 0:
+                            loss_val = loss.item()
+                            lr_val = lr_scheduler.get_last_lr()[0]
+                            print(f"Step {step}: Loss = {loss_val:.4f}")
+                            # TensorBoard にロスと学習率を記録
+                            writer.add_scalar("train/loss", loss_val, step)
+                            writer.add_scalar("train/learning_rate", lr_val, step)
+                            
+                        # 定期的なモデルの保存
+                        if step > 0 and step % cfg.save_steps == 0:
+                            save_path = Path(cfg.output_dir) / cfg.run_id / f"checkpoint-{step}"
+                            accelerator.save_state(save_path)
+                            
+                            # 追加: 推論用の重みファイル (adapter_model.bin) も保存
+                            unwrapped_model = accelerator.unwrap_model(model)
+                            unwrapped_model.save_pretrained(save_path)
+                            print(f"Saved checkpoint and model weights to {save_path}")
 
-            step += 1
 
-    writer.close()
+            pass  # step increment moved inside sync_gradients
+
+    if accelerator.is_main_process:
+        writer.close()
     print("Training complete!")
 
 if __name__ == "__main__":
