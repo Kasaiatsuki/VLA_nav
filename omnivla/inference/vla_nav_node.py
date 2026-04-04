@@ -8,7 +8,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist, Point
+from visualization_msgs.msg import Marker
 from cv_bridge import CvBridge
 import cv2
 import torch
@@ -131,6 +132,7 @@ class VlaNavNode(Node):
 
         # --- Publisher / Subscriber ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.waypoint_marker_pub = self.create_publisher(Marker, 'waypoints_marker', 10)
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
 
@@ -203,6 +205,7 @@ class VlaNavNode(Node):
         
         # 5. 制御 (Waypoints -> Velocity)
         waypoints = predicted_actions[0].float().cpu().numpy()
+        self.publish_waypoints_marker(waypoints)
         v, w = self.compute_velocity(waypoints)
         
         # 6. Twist配信
@@ -245,6 +248,40 @@ class VlaNavNode(Node):
         w = np.clip(w_smoothed, -self.max_w, self.max_w)
         
         return float(v), float(w)
+
+    def publish_waypoints_marker(self, waypoints):
+        """予測されたウェイポイントを Marker (LINE_STRIP) として配信"""
+        marker = Marker()
+        marker.header.frame_id = "base_link"
+        marker.header.stamp = self.get_clock().now().to_msg()
+        marker.ns = "predicted_waypoints"
+        marker.id = 0
+        marker.type = Marker.LINE_STRIP
+        marker.action = Marker.ADD
+        
+        # 線の太さと色
+        marker.scale.x = 0.05
+        marker.color.a = 1.0
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        
+        # 始点としてロボットの位置 (0,0,0) を追加
+        p_start = Point()
+        p_start.x = 0.0
+        p_start.y = 0.0
+        p_start.z = 0.0
+        marker.points.append(p_start)
+        
+        for wp in waypoints:
+            dx, dy, hx, hy = wp
+            p = Point()
+            p.x = float(dx * self.metric_waypoint_spacing)
+            p.y = float(dy * self.metric_waypoint_spacing)
+            p.z = 0.0
+            marker.points.append(p)
+            
+        self.waypoint_marker_pub.publish(marker)
 
 # エントリポイント
 def main(args=None) -> None:
