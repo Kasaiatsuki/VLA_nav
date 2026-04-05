@@ -47,12 +47,12 @@ class VlaNavNode(Node):
         # --- パラメータの設定 ---
         self.declare_parameter('model_path', os.path.join(script_dir, 'omnivla-edge/omnivla-edge.pth'))
         self.declare_parameter('lan_prompt', 'go forward')
-        self.declare_parameter('interval_ms', 333) # 周期: 約3Hz
+        self.declare_parameter('interval_ms', 100) # 周期: 10Hz
         self.declare_parameter('is_autonomous', False)
         self.declare_parameter('linear_vel_max', 0.3)
-        self.declare_parameter('angular_vel_max', 0.5)
-        self.declare_parameter('waypoint_select', 4) # 0-7
-        self.declare_parameter('metric_waypoint_spacing', 0.1)
+        self.declare_parameter('angular_vel_max', 1.0)
+        self.declare_parameter('waypoint_select', 7) # 0-7
+        self.declare_parameter('metric_waypoint_spacing', 0.3)
 
         self.model_path = self.get_parameter('model_path').value
         self.lan_prompt = self.get_parameter('lan_prompt').value
@@ -62,6 +62,15 @@ class VlaNavNode(Node):
         self.max_w = self.get_parameter('angular_vel_max').value
         self.waypoint_select = self.get_parameter('waypoint_select').value
         self.metric_waypoint_spacing = self.get_parameter('metric_waypoint_spacing').value
+
+        # --- 描画用パラメータ（カメラの取り付け位置） ---
+        self.declare_parameter('cam_offset_x', -0.2)  # base_linkから前方への距離(m)
+        self.declare_parameter('cam_offset_z', 0.2)  # base_linkから高さ(m)
+        self.declare_parameter('cam_pitch', 0.3)     # 下向きの傾斜角(rad)
+        
+        self.cam_x = self.get_parameter('cam_offset_x').value
+        self.cam_z = self.get_parameter('cam_offset_z').value
+        self.cam_pitch = self.get_parameter('cam_pitch').value
 
         self.prev_v = 0.0
         self.prev_w = 0.0
@@ -111,6 +120,7 @@ class VlaNavNode(Node):
 
         self.imgsize = (96, 96)
         self.imgsize_clip = (224, 224)
+        self.context_size = self.get_parameter('context_size').value
         self.context_queue = []
         self.mask_360_pil_96 = np.ones((96, 96, 3), dtype=np.float32)
         self.mask_360_pil_224 = np.ones((224, 224, 3), dtype=np.float32)
@@ -133,6 +143,7 @@ class VlaNavNode(Node):
         # --- Publisher / Subscriber ---
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.waypoint_marker_pub = self.create_publisher(Marker, 'waypoints_marker', 10)
+        self.debug_img_pub = self.create_publisher(Image, '/vla_nav/debug_image', 10)
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
 
@@ -165,10 +176,10 @@ class VlaNavNode(Node):
         
         # 3. コンテキストキューの更新
         if len(self.context_queue) == 0:
-            self.context_queue = [image_96] * 6
+            self.context_queue = [image_96] * (self.context_size + 1)
         else:
             self.context_queue.append(image_96)
-            if len(self.context_queue) > 6:
+            if len(self.context_queue) > (self.context_size + 1):
                 self.context_queue.pop(0)
         
         # --- テンソル形式への変換 ---
@@ -208,7 +219,10 @@ class VlaNavNode(Node):
         self.publish_waypoints_marker(waypoints)
         v, w = self.compute_velocity(waypoints)
         
-        # 6. Twist配信
+        # 6. 画像へのオーバーレイ描画
+        self.draw_waypoints_on_image(cv_image, waypoints)
+
+        # 7. Twist配信
         twist_msg = Twist()
         twist_msg.linear.x = v
         twist_msg.angular.z = w
@@ -227,11 +241,11 @@ class VlaNavNode(Node):
         # 1.0m 離れていたらマックス (max_v) になるような比例制御 (P-control)
         v_raw = dx * 1.0 
         
-        # 横方向の偏差に基づいた角速度計算（3.0倍 -> 2.0倍 にマイルド化）
+        # 横方向の偏差に基づいた角速度計算（ゲインを 2.0 -> 4.0 へ強化）
         if abs(dx) < 1e-8:
-            w_raw = np.arctan2(hy, hx) * 2.0
+            w_raw = np.arctan2(hy, hx) * 4.0
         else:
-            w_raw = np.arctan2(dy, dx) * 2.0
+            w_raw = np.arctan2(dy, dx) * 4.0
             
         # --- スムージングの適用 (Low-pass Filter) ---
         alpha_v = 0 # 50% 以前の値を保持
@@ -282,6 +296,79 @@ class VlaNavNode(Node):
             marker.points.append(p)
             
         self.waypoint_marker_pub.publish(marker)
+
+    def draw_waypoints_on_image(self, bgr_img, waypoints):
+        """ウェイポイントを画像上に投影して描画し、配信する"""
+        if self.zed_camera is None:
+            return
+
+        # カメラパラメータの取得
+        cam_p = self.zed_camera.get_camera_params()
+        
+        # 描画用コピー
+        canvas = bgr_img.copy()
+        h, w, _ = canvas.shape # 通常 360, 640
+        
+        pts_2d = []
+        for i, wp in enumerate(waypoints):
+            dx, dy, _, _ = wp
+            x_base = dx * self.metric_waypoint_spacing
+            y_base = dy * self.metric_waypoint_spacing
+            
+            # --- 座標変換 (base_link -> camera_frame) ---
+            # 1. カメラ相対位置 (x:前, y:左, z:上)
+            rel_x = x_base - self.cam_x
+            rel_y = y_base - 0.0
+            rel_z = 0.0 - self.cam_z # 地面(z=0)
+            
+            # 2. カメラ座標系への回転・軸変換 (X:右, Y:下, Z:前)
+            # 未回転時: x_c = -rel_y, y_c = -rel_z, z_c = rel_x
+            # Pitch回転適用後 (Downward positive theta):
+            # y' = y*cos(theta) - z*sin(theta)
+            # z' = y*sin(theta) + z*cos(theta)
+            y_c0 = -rel_z
+            z_c0 = rel_x
+            
+            p_cam_x = -rel_y
+            p_cam_y = y_c0 * math.cos(self.cam_pitch) - z_c0 * math.sin(self.cam_pitch)
+            p_cam_z = y_c0 * math.sin(self.cam_pitch) + z_c0 * math.cos(self.cam_pitch)
+            
+            # 3. 投影
+            if p_cam_z > 0.1:
+                u = cam_p['fx'] * (p_cam_x / p_cam_z) + cam_p['cx']
+                v = cam_p['fy'] * (p_cam_y / p_cam_z) + cam_p['cy']
+                
+                # 画像範囲内かどうかにかかわらず追加（あとで線を描くため）
+                pts_2d.append((int(u), int(v)))
+
+        # デバッグログ (2秒に一度)
+        if len(pts_2d) > 0 and (int(time.time() * 10) % 20 == 0):
+            wp_str = ", ".join([f"({u},{v})" for u, v in pts_2d])
+            self.get_logger().info(f"DEBUG: Trajectory 2D: [{wp_str}]")
+            self.get_logger().info(f"DEBUG: Selected target (idx {self.waypoint_select}): {pts_2d[min(self.waypoint_select, len(pts_2d)-1)]}")
+
+        # 線と点の描画
+        for i in range(len(pts_2d)):
+            u, v = pts_2d[i]
+            # 描画範囲内なら点を描く
+            if 0 <= u < w and 0 <= v < h:
+                cv2.circle(canvas, (u, v), 5, (0, 255, 0), -1)
+            
+            # 線を描く (前の点と結ぶ)
+            if i > 0:
+                p1 = pts_2d[i-1]
+                p2 = pts_2d[i]
+                cv2.line(canvas, p1, p2, (0, 255, 255), 2)
+
+        # テキスト情報
+        cv2.putText(canvas, f"Prompt: {self.lan_prompt}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(canvas, f"Mode: {'AUTO' if self.is_autonomous else 'MANUAL'}", (10, 60), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0) if self.is_autonomous else (0, 0, 255), 2)
+
+        # パブリッシュ
+        debug_msg = self.bridge.cv2_to_imgmsg(canvas, encoding="bgr8")
+        self.debug_img_pub.publish(debug_msg)
 
 # エントリポイント
 def main(args=None) -> None:
