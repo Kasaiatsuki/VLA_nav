@@ -1,12 +1,12 @@
 vla_nav_node:
   ros__parameters:
     lan_prompt: "move toward the red cone"
-    interval_ms: 333
+    interval_ms: 50
     is_autonomous: false
     waypoint_select: 4
     metric_waypoint_spacing: 0.05
     linear_vel_max: 0.3
-    angular_vel_max: 0.3
+    angular_vel_max: 1.0
     model_path: "/home/orne/kasai_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
     model_type: "omnivla-edge"
     len_traj_pred: 8

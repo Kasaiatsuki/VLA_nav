@@ -124,6 +124,9 @@ class VlaNavNode(Node):
         self.context_queue = []
         self.mask_360_pil_96 = np.ones((96, 96, 3), dtype=np.float32)
         self.mask_360_pil_224 = np.ones((224, 224, 3), dtype=np.float32)
+        self.prev_v = 0.0
+        self.prev_w = 0.0
+        self.inference_time_ms = 0.0
 
         # --- モデルのロード ---
         if os.path.exists(self.model_path):
@@ -202,6 +205,7 @@ class VlaNavNode(Node):
         modality_id = torch.tensor([7]).to(self.device)
         
         # 4. 推論実行
+        t_start = time.time()
         with torch.no_grad():
             feat_text = self.text_encoder.encode_text(obj_inst_lan)
             predicted_actions, _, _ = self.model(
@@ -213,6 +217,8 @@ class VlaNavNode(Node):
                 feat_text, 
                 cur_large_img
             )
+        t_end = time.time()
+        self.inference_time_ms = (t_end - t_start) * 1000.0
         
         # 5. 制御 (Waypoints -> Velocity)
         waypoints = predicted_actions[0].float().cpu().numpy()
@@ -344,7 +350,7 @@ class VlaNavNode(Node):
         # デバッグログ (2秒に一度)
         if len(pts_2d) > 0 and (int(time.time() * 10) % 20 == 0):
             wp_str = ", ".join([f"({u},{v})" for u, v in pts_2d])
-            self.get_logger().info(f"DEBUG: Trajectory 2D: [{wp_str}]")
+            self.get_logger().info(f"DEBUG: Inference: {self.inference_time_ms:.1f}ms, Trajectory 2D: [{wp_str}]")
             self.get_logger().info(f"DEBUG: Selected target (idx {self.waypoint_select}): {pts_2d[min(self.waypoint_select, len(pts_2d)-1)]}")
 
         # 線と点の描画
