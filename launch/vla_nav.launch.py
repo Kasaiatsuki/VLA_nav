@@ -15,15 +15,6 @@ def generate_launch_description():
         parameters=[config_file]
     )
 
-    topological_manager_node = Node(
-        package='omnivla',
-        executable='topological_manager_node',
-        name='topological_manager_node',
-        output='screen',
-        parameters=[config_file]
-    )
-
     return LaunchDescription([
-        vla_nav_node,
-        topological_manager_node
+        vla_nav_node
     ])

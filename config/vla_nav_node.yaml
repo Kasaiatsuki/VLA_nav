@@ -1,12 +1,12 @@
 vla_nav_node:
   ros__parameters:
     lan_prompt: "move forward avoiding walls, take very wide turns to account for 50cm front and 20cm side protrusion. if the path ahead is a dead end, stop and rotate to find a new route to proceed. Keep a safe distance from objects even after avoiding them and return to the center of the path gradually and slowly."
-    interval_ms: 333
+    interval_ms: 100
     is_autonomous: false
-    waypoint_select: 4
-    metric_waypoint_spacing: 0.05
-    linear_vel_max: 0.3
-    angular_vel_max: 0.3
+    waypoint_select: 7
+    metric_waypoint_spacing: 0.1
+    linear_vel_max: 0.5
+    angular_vel_max: 1.0
     model_path: "/home/orne/kasai_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
     model_type: "omnivla-edge"
     len_traj_pred: 8

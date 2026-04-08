@@ -9,11 +9,13 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 import time
-import os
-import csv
+import math
 import pickle
+import threading
 from pathlib import Path
 from typing import Optional, List, Tuple
+from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry
 
 # 注意: このスクリプトは omnivla/vla_data_collection ディレクトリに配置される想定です。
 # 同じディレクトリにある zed_capture_vla.py からインポートします。
@@ -39,10 +41,16 @@ class DataCollectionNodeVLA(Node):
         # 収集したデータ: [(画像, [世界X, 世界Y, 世界Yaw], タイムスタンプ), ...]
         self.raw_data_buffer = []
 
+        # FAST-LIO等からの最新オドメトリを保持
+        self.latest_pose = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
         # データ収集のオン/オフ状態管理
         self.is_paused: bool = True
 
-        self.get_logger().info('Initializing ZED camera with Positional Tracking...')
+        self.latest_image = None
+        self.latest_image_stamp = 0.0
+
+        self.get_logger().info('Initializing ZED camera...')
         self.zed_camera = ZedCameraWrapperVLA(fps=15)
         
         try:
@@ -52,12 +60,43 @@ class DataCollectionNodeVLA(Node):
             self.get_logger().error(str(e))
             raise e
 
+        # カメラ取得用の別スレッドを開始 (ROSの処理をブロックさせないため)
+        self.camera_thread_running = True
+        self.camera_thread = threading.Thread(target=self._camera_grab_loop, daemon=True)
+        self.camera_thread.start()
+
         # ジョイコントローラ等からのトリガー
         self.create_subscription(Empty, 'flag', self._flag_callback, 10)
+        
+        # オドメトリのサブスクライブ
+        self.create_subscription(Odometry, '/Odometry', self._odom_callback, 10)
         
         # タイマーによるデータ収集
         self.create_timer(SAMPLE_INTERVAL, self.timer_callback)
         self.get_logger().info('Started VLA data collection node. Waiting for /flag (start signal).')
+
+    def _camera_grab_loop(self):
+        """ZEDカメラの画像を裏で取得し続ける専用スレッド"""
+        while self.camera_thread_running:
+            result = self.zed_camera.grab_data()
+            if result is not None:
+                self.latest_image, self.latest_image_stamp = result
+            time.sleep(0.01) # 短いスリープでCPU負荷を下げる
+
+    def _odom_callback(self, msg: Odometry) -> None:
+        """FAST-LIO等からのオドメトリを受信し、最新の姿勢を更新する"""
+        pos = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        
+        x = pos.x
+        y = pos.y
+        # Quaternion から Yaw の計算
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        
+        self.latest_pose = np.array([x, y, yaw], dtype=np.float32)
+        if not hasattr(self, '_odom_received'):
+            self._odom_received = True
+            self.get_logger().info('✅ FAST-LIO Odometry received for the first time!')
 
     def _flag_callback(self, _msg: Empty) -> None:
         """/flagトピック受信時に録画をトグル(開始/停止)する"""
@@ -70,16 +109,18 @@ class DataCollectionNodeVLA(Node):
             self.get_logger().info('▶️ Data collection RECORDING')
 
     def timer_callback(self) -> None:
-        """定期的にZEDから画像とポーズを取得してバッファに詰める"""
+        """定期的に最新の画像とポーズを取得してバッファに詰める"""
         if self.is_paused:
             return
 
-        result = self.zed_camera.grab_data()
-        if result is None:
-            self.get_logger().warning('Failed to grab data from ZED camera.')
+        if self.latest_image is None:
+            self.get_logger().warning('Waiting for camera frame...')
             return
 
-        image, pose, timestamp = result
+        image = self.latest_image.copy()
+        timestamp = self.latest_image_stamp
+        pose = self.latest_pose.copy()
+        
         self.raw_data_buffer.append((image, pose, timestamp))
         
         self.get_logger().info(f'🟡Collected raw data #{len(self.raw_data_buffer)} (Pose: X={pose[0]:.2f}, Y={pose[1]:.2f}, Yaw={pose[2]:.2f})')
@@ -158,8 +199,10 @@ def main(args=None) -> None:
         node.get_logger().info('Interrupted by user')
     finally:
         node.save_data()
+        node.camera_thread_running = False
         if hasattr(node, 'zed_camera') and node.zed_camera:
              node.zed_camera.close()
+        node.camera_thread.join(timeout=1.0)
         node.destroy_node()
         rclpy.shutdown()
 

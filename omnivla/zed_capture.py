@@ -45,6 +45,23 @@ class ZedCameraWrapper:
             return cv2.resize(bgr_image, (640, 360), interpolation=cv2.INTER_LINEAR)
         return None
 
+    def get_camera_params(self):
+        """カメラの内部パラメータ(fx, fy, cx, cy)を取得し、リサイズ後のスケールに合わせて返す"""
+        calibration_params = self.camera.get_camera_information().camera_configuration.calibration_parameters
+        # 右目を使用
+        cam_info = calibration_params.right_cam
+        
+        # 1280x720 から 640x360 へのスケール
+        scale_x = 640.0 / 1280.0
+        scale_y = 360.0 / 720.0
+        
+        return {
+            'fx': cam_info.fx * scale_x,
+            'fy': cam_info.fy * scale_y,
+            'cx': cam_info.cx * scale_x,
+            'cy': cam_info.cy * scale_y
+        }
+
     def close(self) -> None:
         """カメラを適切に閉じる"""
         self.camera.close()
