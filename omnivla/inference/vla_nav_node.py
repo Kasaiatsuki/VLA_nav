@@ -6,7 +6,7 @@ ROS 2のTwistメッセージとして配信('/cmd_vel')するノードです。
 """
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import Bool, String
 from geometry_msgs.msg import Twist, Point
 from visualization_msgs.msg import Marker
@@ -34,11 +34,8 @@ if vla_nav_root not in sys.path:
 from utils_policy import load_model, transform_images_PIL_mask, transform_images_map
 import clip
 
-# ローカルのZedCameraWrapperを使用
-from omnivla.zed_capture import ZedCameraWrapper
-
 ### ROS 2 ノード: VLA Navigation Node (OmniVLA-edge)
-### 役割: ZEDカメラからの画像と自然言語の指示（プロンプト）を受け取り、
+### 役割: ROSトピック経由で単眼カメラからの画像と自然言語の指示（プロンプト）を受け取り、
 ###       OmniVLA-edgeモデルを通じてロボットの速度指令(cmd_vel)を生成します。
 class VlaNavNode(Node):
     def __init__(self) -> None:
@@ -78,14 +75,19 @@ class VlaNavNode(Node):
         self.bridge = CvBridge()
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # --- ZED カメラの初期化 ---
-        try:
-            self.zed_camera = ZedCameraWrapper(fps=15) # fpsを30から15に変更（omnivla_navに合わせる）
-            self.zed_camera.open()
-            self.get_logger().info('ZED camera initialized successfully')
-        except Exception as e:
-            self.get_logger().error(f"Failed to initialize ZED camera: {e}")
-            self.zed_camera = None
+        # --- 単眼カメラ用サブスクライバの初期化 ---
+        self.declare_parameter('camera_topic', '/image_raw')
+        self.declare_parameter('camera_info_topic', '/camera_info')
+        camera_topic = self.get_parameter('camera_topic').value
+        camera_info_topic = self.get_parameter('camera_info_topic').value
+        
+        self.latest_cv_image = None
+        self.cam_p = None # カメラパラメータ用辞書 (fx, fy, cx, cy)
+        
+        self.create_subscription(Image, camera_topic, self._camera_image_callback, 10)
+        self.create_subscription(CameraInfo, camera_info_topic, self._camera_info_callback, 10)
+        self.get_logger().info(f'Subscribed to camera topic: {camera_topic}')
+        self.get_logger().info(f'Subscribed to camera info topic: {camera_info_topic}')
 
         # --- OmniVLA-edge モデル用設定 ---
         self.declare_parameter('model_type', 'omnivla-edge')
@@ -161,14 +163,27 @@ class VlaNavNode(Node):
         self.lan_prompt = msg.data
         self.get_logger().info(f'Language prompt updated to: {self.lan_prompt}')
 
+    def _camera_image_callback(self, msg: Image) -> None:
+        try:
+            self.latest_cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except Exception as e:
+            self.get_logger().error(f"Failed to process camera image: {e}")
+
+    def _camera_info_callback(self, msg: CameraInfo) -> None:
+        if self.cam_p is None:
+            self.cam_p = {
+                'fx': msg.k[0],
+                'fy': msg.k[4],
+                'cx': msg.k[2],
+                'cy': msg.k[5]
+            }
+
     def timer_callback(self) -> None:
-        if not self.is_autonomous or self.model is None or self.zed_camera is None:
+        if not self.is_autonomous or self.model is None or self.latest_cv_image is None:
             return
 
         # 1. 画像の取得
-        cv_image = self.zed_camera.grab_image()
-        if cv_image is None:
-            return
+        cv_image = self.latest_cv_image.copy()
         
         # 2. 画像の前処理
         rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
@@ -305,11 +320,11 @@ class VlaNavNode(Node):
 
     def draw_waypoints_on_image(self, bgr_img, waypoints):
         """ウェイポイントを画像上に投影して描画し、配信する"""
-        if self.zed_camera is None:
+        if self.cam_p is None:
             return
 
         # カメラパラメータの取得
-        cam_p = self.zed_camera.get_camera_params()
+        cam_p = self.cam_p
         
         # 描画用コピー
         canvas = bgr_img.copy()
@@ -385,9 +400,6 @@ def main(args=None) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        # 終了時にカメラを安全に閉じる
-        if node.zed_camera:
-            node.zed_camera.close()
         node.destroy_node()
         rclpy.shutdown()
 
