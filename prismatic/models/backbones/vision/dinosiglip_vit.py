@@ -143,7 +143,11 @@ class DinoSigLIPViTBackbone(VisionBackbone):
         """Runs the transformed image/pixel tensors through each vision backbone, returning concatenated patches."""
         dino_patches = self.dino_featurizer(pixel_values["dino"])
         siglip_patches = self.siglip_featurizer(pixel_values["siglip"])
-
+        # 新しいバージョンの timm では get_intermediate_layers がリストを返す場合があるため変換する
+        if isinstance(dino_patches, (list, tuple)):
+            dino_patches = dino_patches[0]
+        if isinstance(siglip_patches, (list, tuple)):
+            siglip_patches = siglip_patches[0]
         return torch.cat([dino_patches, siglip_patches], dim=2)
 
     @property

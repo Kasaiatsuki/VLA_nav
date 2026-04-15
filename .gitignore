@@ -25,3 +25,17 @@ omnivla-edge/
 **/__pycache__/
 # Ignore all wandb directories everywhere
 **/wandb/
+
+# Data and Checkpoints
+data/
+checkpoints/
+dummy_dataset/
+data_sample/
+*.pth
+*.bin
+*.pkl
+omnivla/inference/omnivla-edge/
+omnivla/inference/__pycache__/
+omnivla/__pycache__/
+Loading
+[*]

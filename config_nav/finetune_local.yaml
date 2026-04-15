@@ -1,0 +1,36 @@
+# ====================================================
+#  OmniVLA ローカル ファインチューニング 設定ファイル
+# ====================================================
+# 使い方:
+#   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+#   PYTHONPATH=. conda run --no-capture-output -n omnivla_foxy \
+#   python3 vla-scripts/train_omnivla_local.py --config config_nav/finetune_local.yaml
+
+# --- モデルとデータのパス ---
+vla_path: "openvla/openvla-7b"             # ベースモデル（HuggingFace ID またはローカルパス）
+data_dir: "/home/orne/kasai_ws/src/VLA_nav/data/20260408_191058_combined_dataset_t_2"  # 収集したデータのフォルダ
+run_id: "local-vla-finetune-v1"            # この実験の識別名（チェックポイント保存に使われます）
+output_dir: "checkpoints"                  # 学習済みモデルの保存先
+
+# --- 学習の基本パラメータ ---
+max_steps: 2500                             # 学習ステップ数（目安: データ量 × 5〜10 ステップ）
+batch_size: 4                              # GPUメモリに合わせて設定（8GB VRAM では 1 推奨）
+grad_accumulation_steps: 2                 # 実質バッチサイズ = batch_size × grad_accumulation_steps
+learning_rate: 2.0e-5                      # 学習率（小さすぎると学習が遅い、大きすぎると不安定）
+save_steps: 100                            # 何ステップごとにチェックポイントを保存するか
+
+# --- LoRA 設定（低ランク適応：少ないパラメータで効率的にファインチューニング）---
+use_lora: true
+lora_rank: 16                               # LoRAのランク（32→８に削減、メモリ大幅削減）
+lora_alpha: 32                             # LoRAのスケーリング係数
+lora_dropout: 0.05                         # ドロップアウト率（過学習防止）
+
+# --- スケジューラ設定 ---
+warmup_steps: 50                           # 最初の N ステップで学習率をウォームアップ
+weight_decay: 0.0                          # 重み減衰（正則化）
+
+# --- ハードウェア設定 ---
+use_4bit: true                             # 4bit量子化（8GB VRAM では必須）
+mixed_precision: "fp16"                    # 演算精度（RTX 30xx以降は bf16 も可能）
+device: "cuda"
+num_workers: 8                             # データローダーのワーカー数（0推奨）

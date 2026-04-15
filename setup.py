@@ -23,6 +23,10 @@ setup(
     entry_points={
         'console_scripts': [
             'vla_nav_node = omnivla.inference.vla_nav_node:main',
+            'vla_nav_7b_node = omnivla.inference.vla_nav_7b_node:main',
+            'create_data_vla = omnivla.vla_data_collection.create_data_vla:main',
+            'topological_manager_node = omnivla.inference.topological_manager_node:main',
+            'capture_goal_images_node = omnivla.inference.capture_goal_images_node:main',
         ],
     },
 )

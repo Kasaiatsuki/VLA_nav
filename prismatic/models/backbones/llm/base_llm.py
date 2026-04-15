@@ -109,20 +109,32 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
         hf_token: Optional[str] = None,
         inference_mode: bool = False,
         use_flash_attention_2: bool = False,
+        use_4bit: bool = False,
     ) -> None:
         super().__init__(llm_backbone_id)
         self.llm_family = llm_family
         self.llm_max_length = llm_max_length
         self.inference_mode = inference_mode
 
+        # [Important] Handle Quantization (for low-VRAM GPUs)
+        quantization_config = None
+        if use_4bit:
+            from transformers import BitsAndBytesConfig
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16, bnb_4bit_quant_type="nf4"
+            )
+
         # Initialize LLM (downloading from HF Hub if necessary) --> `llm_cls` is the actual {Model}ForCausalLM class!
-        #   => Note: We're eschewing use of the AutoModel API so that we can be more explicit about LLM-specific details
+        # [MODIFIED] Use low_cpu_mem_usage=True and torch_dtype to save RAM
         if not self.inference_mode:
             overwatch.info(f"Loading [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
             self.llm = llm_cls.from_pretrained(
                 hf_hub_path,
                 token=hf_token,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
                 use_flash_attention_2=use_flash_attention_2 if not self.inference_mode else False,
+                quantization_config=quantization_config,
                 # The following parameters are set to prevent `UserWarnings` from HF; we want greedy decoding!
                 do_sample=False,
                 temperature=1.0,
@@ -131,9 +143,18 @@ class HFCausalLLMBackbone(LLMBackbone, ABC):
 
         # [Contract] `inference_mode` means we're loading from a pretrained checkpoint; no need to load base weights!
         else:
-            overwatch.info(f"Building empty [bold]{llm_family}[/] LLM from [underline]`{hf_hub_path}`[/]", ctx_level=1)
-            llm_config = AutoConfig.from_pretrained(hf_hub_path, token=hf_token)
-            self.llm = llm_cls._from_config(llm_config)
+            # [MODIFIED] Using _from_config creates an fp32 model in RAM (~28GB for 7B), which causes OOM on 16GB machines.
+            # Instead, we load the weights in 4-bit (or half-precision) even for inference mode to stay within RAM limits.
+            overwatch.info(f"Loading [bold]{llm_family}[/] LLM for inference from [underline]`{hf_hub_path}`[/] (4-bit/efficient)", ctx_level=1)
+            self.llm = llm_cls.from_pretrained(
+                hf_hub_path,
+                token=hf_token,
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True,
+                quantization_config=quantization_config,
+                device_map="auto" if use_4bit else None, # 4-bit requires device_map or explicit moving
+                do_sample=False,
+            )
 
         # Lightweight Handling (with extended explanation) for setting some LLM Parameters
         #   => Set `decoder.use_cache = False` --> incompatible with gradient checkpointing (+ training in general)

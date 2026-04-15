@@ -1,71 +1,84 @@
 """
 action_tokenizer.py
 
-Extension class; wraps base LLM/VLM tokenizer with logic to discretize and tokenize continuous robot actions.
+ロボットの連続的な動きを離散化し、言語モデルのトークンに変換するためのクラスです。
 """
 
 from typing import List, Union
-
 import numpy as np
+import torch
 from transformers import PreTrainedTokenizerBase
-
 
 class ActionTokenizer:
     def __init__(
-        self, tokenizer: PreTrainedTokenizerBase, bins: int = 256, min_action: int = -1, max_action: int = 1
+        self, 
+        tokenizer: PreTrainedTokenizerBase, 
+        bins: int = 256, 
+        min_action: float = -1.0, 
+        max_action: float = 1.0
     ) -> None:
         """
-        Discretizes continuous robot actions into N bins per dimension and maps to the least used tokens.
+        連続的なロボットのアクションを N 個のビンに分割し、語彙の末尾にあるトークンにマッピングします。
 
-        NOTE =>> by default, assumes a BPE-style tokenizer akin to the LlamaTokenizer, where *the least used tokens*
-                 appear at the end of the vocabulary!
-
-        :param tokenizer: Base LLM/VLM tokenizer to extend.
-        :param bins: Number of bins for each continuous value; we'll adopt a uniform binning strategy.
-        :param min_action: Minimum action value (for clipping, setting lower bound on bin interval).
-        :param max_action: Maximum action value (for clipping, setting upper bound on bin interval).
+        :param tokenizer: ベースとなる LLM/VLM のトークナイザー。
+        :param bins: 各連続値に対する分割数（ビン数）。
+        :param min_action: アクションの最小値（これ以下の値はクリップされます）。
+        :param max_action: アクションの最大値（これ以上の値はクリップされます）。
         """
-        self.tokenizer, self.n_bins, self.min_action, self.max_action = tokenizer, bins, min_action, max_action
+        self.tokenizer = tokenizer
+        self.n_bins = bins
+        self.min_action = min_action
+        self.max_action = max_action
 
-        # Create Uniform Bins + Compute Bin Centers
-        self.bins = np.linspace(min_action, max_action, self.n_bins)
+        # 1. 均等なビン（仕切り）を作成し、各ビンの中心値を計算します
+        self.bins = np.linspace(self.min_action, self.max_action, self.n_bins)
         self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0
 
-        # [Contract] Set "action_token_begin_idx" based on `self.tokenizer.vocab_size - (self.n_bins + 1)`
-        #   =>> Assumes we're always overwriting the final `n_bins` tokens of the vocabulary!
+        # 2. アクション用トークンの開始インデックスを設定します
+        #    通常、語彙（vocab）の最後の方にある、あまり使われないトークンを再利用します。
         self.action_token_begin_idx: int = int(self.tokenizer.vocab_size - (self.n_bins + 1))
 
-    def __call__(self, action: np.ndarray) -> Union[str, List[str]]:
-        """Clip & bin actions to *the last `n_bins` tokens* of the vocabulary (e.g., tokenizer.vocab[-256:])."""
+    def encode_action(self, action: np.ndarray) -> np.ndarray:
+        """
+        連続値のアクションを、対応するトークン ID（整数）に変換します。
+        """
+        # 値を最小・最大範囲内に収める
         action = np.clip(action, a_min=float(self.min_action), a_max=float(self.max_action))
+        
+        # どのビンに属するかを判定 (1 〜 self.n_bins の値が返ります)
         discretized_action = np.digitize(action, self.bins)
-
-        # Handle single element vs. batch
-        if len(discretized_action.shape) == 1:
-            return self.tokenizer.decode(list(self.tokenizer.vocab_size - discretized_action))
-        else:
-            return self.tokenizer.batch_decode((self.tokenizer.vocab_size - discretized_action).tolist())
+        
+        # ビン番号をトークナイザーの語彙インデックス（後ろからのオフセット）に変換
+        return (self.tokenizer.vocab_size - discretized_action).astype(np.int64)
 
     def decode_token_ids_to_actions(self, action_token_ids: np.ndarray) -> np.ndarray:
         """
-        Returns continuous actions for discrete action token IDs.
-
-        NOTE =>> Because of the way the actions are discretized w.r.t. the bins (and not the bin centers), the
-                 digitization returns bin indices between [1, # bins], inclusive, when there are actually only
-                 (# bins - 1) bin intervals.
-
-                 Therefore, if the digitization returns the last possible index, we map this to the last bin interval.
-
-        EXAMPLE =>> Let's say self._bins has 256 values. Then self._bin_centers has 255 values. Digitization returns
-                    indices between [1, 256]. We subtract 1 from all indices so that they are between [0, 255]. There
-                    is still one index (i==255) that would cause an out-of-bounds error if used to index into
-                    self._bin_centers. Therefore, if i==255, we subtract 1 from it so that it just becomes the index of
-                    the last bin center. We implement this simply via clipping between [0, 255 - 1].
+        トークン ID（整数）を、元の連続値のアクション（数値）に逆変換します。
         """
+        # ID から逆算して何番目のビンかを取得
         discretized_actions = self.tokenizer.vocab_size - action_token_ids
+        
+        # インデックス範囲を [0, bin_centers.shape[0]-1] に収める
         discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
 
+        # ビンの中心値を返す
         return self.bin_centers[discretized_actions]
+
+    def __call__(self, actions: Union[torch.Tensor, np.ndarray]) -> str:
+        """
+        PyTorch テンソルまたは NumPy 配列を受け取り、トークン化された文字列を返します。
+        データセット作成時の `action_chunk_string = "".join(self.action_tokenizer(actions))` で使われます。
+        """
+        # 入力がテンソルの場合は NumPy に変換
+        if isinstance(actions, torch.Tensor):
+            actions = actions.detach().cpu().numpy()
+            
+        # 数値を ID へ変換
+        token_ids = self.encode_action(actions)
+        
+        # ID の羅列を、一つの文字列としてデコードして返します
+        # flatten() を使うことで、多次元配列（軌跡）を一本のトークン列にします
+        return self.tokenizer.decode(token_ids.flatten())
 
     @property
     def vocab_size(self) -> int:
