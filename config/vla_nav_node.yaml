@@ -1,7 +1,7 @@
 vla_nav_node:
   ros__parameters:
-    lan_prompt: "move forward avoiding walls, take very wide turns to account for 50cm front and 20cm side protrusion. if the path ahead is a dead end, stop and rotate to find a new route to proceed. Keep a safe distance from objects even after avoiding them and return to the center of the path gradually and slowly."
-    interval_ms: 100
+    lan_prompt: "move toward the red cone."
+    interval_ms: 50
     is_autonomous: false
     waypoint_select: 7
     metric_waypoint_spacing: 0.1
