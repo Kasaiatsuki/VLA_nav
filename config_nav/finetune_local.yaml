@@ -8,12 +8,12 @@
 
 # --- モデルとデータのパス ---
 vla_path: "openvla/openvla-7b"             # ベースモデル（HuggingFace ID またはローカルパス）
-data_dir: "~/kasai_ws/src/VLA_nav/data/vla_20260321_151237_dataset"  # 収集したデータのフォルダ
+data_dir: "/home/orne/kasai_ws/src/VLA_nav/data/20260408_191058_combined_dataset_t_2"  # 収集したデータのフォルダ
 run_id: "local-vla-finetune-v1"            # この実験の識別名（チェックポイント保存に使われます）
 output_dir: "checkpoints"                  # 学習済みモデルの保存先
 
 # --- 学習の基本パラメータ ---
-max_steps: 5000                             # 学習ステップ数（目安: データ量 × 5〜10 ステップ）
+max_steps: 2500                             # 学習ステップ数（目安: データ量 × 5〜10 ステップ）
 batch_size: 4                              # GPUメモリに合わせて設定（8GB VRAM では 1 推奨）
 grad_accumulation_steps: 2                 # 実質バッチサイズ = batch_size × grad_accumulation_steps
 learning_rate: 2.0e-5                      # 学習率（小さすぎると学習が遅い、大きすぎると不安定）
