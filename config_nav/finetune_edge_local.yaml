@@ -1,0 +1,19 @@
+# ====================================================
+#  OmniVLA-Edge ローカル ファインチューニング 設定ファイル
+# ====================================================
+# 使い方:
+#   python3 train_omnivla_edge_local.py --config ../../config_nav/finetune_edge_local.yaml
+
+# --- モデルとデータのパス ---
+vla_path: "/home/orne/kasai_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
+data_dir: "/home/orne/kasai_ws/src/data/vla_mono_20260416_192801"
+run_id: "edge-vla-finetune-v1"
+output_dir: "checkpoints_edge"
+
+# --- 学習の基本パラメータ ---
+epochs: 22
+batch_size: 10
+learning_rate: 1.0e-4
+
+# --- 目標指示（言語プロンプト） ---
+prompt: "follow the person ahead while maintaining a certain distance"

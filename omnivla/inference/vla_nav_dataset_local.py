@@ -107,6 +107,6 @@ class OmniVLAEdgeDataset(Dataset):
             # The model expects [dx, dy, cos(rel_yaw), sin(rel_yaw)]
             rel_waypoints.append([rot_x, rot_y, np.cos(rel_yaw), np.sin(rel_yaw)])
             
-        action_label = torch.tensor(rel_waypoints, dtype=torch.float32)
+        action_label = torch.tensor(np.array(rel_waypoints), dtype=torch.float32)
         
         return obs_stack, action_label

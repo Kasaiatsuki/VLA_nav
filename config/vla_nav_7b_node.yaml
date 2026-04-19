@@ -1,0 +1,13 @@
+vla_nav_7b_node:
+  ros__parameters:
+    base_model_id: "openvla/openvla-7b"
+    checkpoint_path: "/home/orne/kasai_ws/src/VLA_nav/checkpoints/local-vla-finetune-v1/checkpoint-2500"
+    lan_prompt: "go forward without hitting the wall"
+    interval_ms: 1000
+    linear_vel_max: 0.3
+    angular_vel_max: 1.0
+    camera_topic: "/image_raw"
+    waypoint_select: 0
+    metric_waypoint_spacing: 0.2
+    v_gain: 1.0
+    w_gain: 2.0

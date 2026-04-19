@@ -4,6 +4,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 from geometry_msgs.msg import Twist
+from rclpy.qos import qos_profile_sensor_data
 from cv_bridge import CvBridge
 import cv2
 import torch
@@ -23,7 +24,7 @@ if vla_nav_root not in sys.path:
 from prismatic.models.load import load_vla
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from omnivla.zed_capture import ZedCameraWrapper
+# from omnivla.zed_capture import ZedCameraWrapper
 
 class VlaNav7BNode(Node):
     def __init__(self) -> None:
@@ -36,6 +37,11 @@ class VlaNav7BNode(Node):
         self.declare_parameter('linear_vel_max', 0.3)
         self.declare_parameter('angular_vel_max', 0.5)
         self.declare_parameter('interval_ms', 1000)
+        self.declare_parameter('waypoint_select', 0)
+        self.declare_parameter('metric_waypoint_spacing', 1.0)
+        self.declare_parameter('v_gain', 1.0)
+        self.declare_parameter('w_gain', 2.0)
+        self.declare_parameter('camera_topic', '/image_raw')
 
         # 1. ROS 2 パラメータの取得
         self.base_model_id = self.get_parameter('base_model_id').value.strip()
@@ -44,6 +50,11 @@ class VlaNav7BNode(Node):
         self.max_v = float(self.get_parameter('linear_vel_max').value)
         self.max_w = float(self.get_parameter('angular_vel_max').value)
         interval_ms = int(self.get_parameter('interval_ms').value)
+        self.waypoint_select = int(self.get_parameter('waypoint_select').value)
+        self.metric_waypoint_spacing = float(self.get_parameter('metric_waypoint_spacing').value)
+        self.v_gain = float(self.get_parameter('v_gain').value)
+        self.w_gain = float(self.get_parameter('w_gain').value)
+        camera_topic = self.get_parameter('camera_topic').value
 
         # 2. 【フォールバック】直接 sys.argv から取得 (ROS 2 Foxy の python3 直接実行対策)
         if not self.checkpoint_path:
@@ -60,14 +71,10 @@ class VlaNav7BNode(Node):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.bridge = CvBridge()
         
-        # --- ZED カメラの初期化 ---
-        try:
-            self.zed_camera = ZedCameraWrapper(fps=15)
-            self.zed_camera.open()
-            self.get_logger().info('ZED camera initialized successfully')
-        except Exception as e:
-            self.get_logger().error(f"Failed to initialize ZED camera: {e}")
-            self.zed_camera = None
+        # --- 単眼カメラの設定 ---
+        self.latest_cv_image = None
+        self.create_subscription(Image, camera_topic, self._camera_image_callback, qos_profile_sensor_data)
+        self.get_logger().info(f'Subscribed to camera topic: {camera_topic}')
 
         # --- OmniVLA (7B) モデルのロード ---
         self.get_logger().info(f'Loading VLA base model: {self.base_model_id} (4-bit)...')
@@ -99,6 +106,9 @@ class VlaNav7BNode(Node):
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
 
+        # デバッグ用パブリッシャ
+        self.debug_img_pub = self.create_publisher(Image, '/vla_nav_7b/debug_image', 10)
+
         self.is_autonomous = True
         self.timer = self.create_timer(interval_ms / 1000.0, self.timer_callback)
         self.get_logger().info('VLA Nav 7B Node READY.')
@@ -111,13 +121,21 @@ class VlaNav7BNode(Node):
         self.lan_prompt = msg.data
         self.get_logger().info(f"Updated prompt: '{self.lan_prompt}'")
 
+    def _camera_image_callback(self, msg: Image) -> None:
+        if self.latest_cv_image is None:
+            self.get_logger().info('Received FIRST image from camera in 7B node.')
+        try:
+            self.latest_cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+        except Exception as e:
+            self.get_logger().error(f"Failed to process camera image: {e}")
+
     @torch.inference_mode()
     def timer_callback(self) -> None:
-        if not self.is_autonomous or self.zed_camera is None:
+        if not self.is_autonomous or self.latest_cv_image is None:
             return
 
-        # 1. カメラ画像取得
-        frame = self.zed_camera.grab_image()
+        # 1. 画像取得
+        frame = self.latest_cv_image.copy()
         if frame is None:
             return
 
@@ -174,10 +192,12 @@ class VlaNav7BNode(Node):
                 normalized_actions = self.action_tokenizer.decode_token_ids_to_actions(action_token_ids)
                 waypoints = normalized_actions.reshape(-1, 4)
                 
-                dx, dy = waypoints[0,0], waypoints[0,1]
-                v = np.clip(dx * 1.0, 0.0, self.max_v)
-                w = np.clip(dy * 2.0, -self.max_w, self.max_w)
-                self.get_logger().info(f"Inferred: dx={dx:.3f}, dy={dy:.3f} -> v={v:.2f}, w={w:.2f}")
+                # パラメータに基づく制御計算
+                target_wp = waypoints[self.waypoint_select]
+                dx, dy = target_wp[0], target_wp[1]
+                v = np.clip(dx * self.v_gain, 0.0, self.max_v)
+                w = np.clip(dy * self.w_gain, -self.max_w, self.max_w)
+                self.get_logger().info(f"Inferred (wp={self.waypoint_select}): dx={dx:.3f}, dy={dy:.3f} -> v={v:.2f}, w={w:.2f}")
 
             # 配信
             twist_msg = Twist()
@@ -185,9 +205,34 @@ class VlaNav7BNode(Node):
             twist_msg.angular.z = float(w)
             self.cmd_vel_pub.publish(twist_msg)
             self.vla_cmd_vel_pub.publish(twist_msg)
+
+            # --- デバッグ表示用 (描画と配信) ---
+            if valid_action:
+                self.draw_waypoints_on_image(frame, waypoints, v, w)
             
         except Exception as e:
             self.get_logger().error(f"Inference Loop Error: {e}")
+
+    def draw_waypoints_on_image(self, bgr_img, waypoints, v, w):
+        """予測されたウェイポイントを画像上に簡易描画し、配信する"""
+        canvas = bgr_img.copy()
+        h, w_img, _ = canvas.shape
+        
+        # 描画スケールも調整可能にする
+        scale = self.metric_waypoint_spacing * 200.0
+        
+        # 簡易描画: 画像中央らへんから推論値に基づくベクトルを描画
+        start_pt = (int(w_img/2), h - 10)
+        # 選択されたウェイポイントを描画
+        target_wp = waypoints[self.waypoint_select]
+        end_pt = (int(w_img/2 + target_wp[1] * scale), int(h - 10 - target_wp[0] * scale))
+        
+        cv2.arrowedLine(canvas, start_pt, end_pt, (0, 255, 0), 3)
+        cv2.putText(canvas, f"v={v:.2f}, w={w:.2f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(canvas, f"Prompt: {self.lan_prompt}", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        debug_msg = self.bridge.cv2_to_imgmsg(canvas, encoding="bgr8")
+        self.debug_img_pub.publish(debug_msg)
 
 def main(args=None):
     rclpy.init(args=args)
@@ -197,8 +242,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node.zed_camera:
-            node.zed_camera.close()
         node.destroy_node()
         rclpy.shutdown()
 

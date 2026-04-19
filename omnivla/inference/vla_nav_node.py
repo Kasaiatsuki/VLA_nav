@@ -8,6 +8,7 @@ vla_nav_node.py
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
+from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Bool, String
 from geometry_msgs.msg import Twist, Point
 from visualization_msgs.msg import Marker
@@ -73,14 +74,7 @@ class VlaNavNode(Node):
         self.cam_z = self.get_parameter('cam_offset_z').value
         self.cam_pitch = self.get_parameter('cam_pitch').value
 
-        # --- 描画用パラメータ（カメラの取り付け位置） ---
-        self.declare_parameter('cam_offset_x', -0.2)  # base_linkから前方への距離(m)
-        self.declare_parameter('cam_offset_z', 0.2)  # base_linkから高さ(m)
-        self.declare_parameter('cam_pitch', 0.3)     # 下向きの傾斜角(rad)
-        
-        self.cam_x = self.get_parameter('cam_offset_x').value
-        self.cam_z = self.get_parameter('cam_offset_z').value
-        self.cam_pitch = self.get_parameter('cam_pitch').value
+
 
         self.prev_v = 0.0
         self.prev_w = 0.0
@@ -98,8 +92,8 @@ class VlaNavNode(Node):
         self.latest_cv_image = None
         self.cam_p = None # カメラパラメータ用辞書 (fx, fy, cx, cy)
         
-        self.create_subscription(Image, camera_topic, self._camera_image_callback, 10)
-        self.create_subscription(CameraInfo, camera_info_topic, self._camera_info_callback, 10)
+        self.create_subscription(Image, camera_topic, self._camera_image_callback, qos_profile_sensor_data)
+        self.create_subscription(CameraInfo, camera_info_topic, self._camera_info_callback, qos_profile_sensor_data)
         self.get_logger().info(f'Subscribed to camera topic: {camera_topic}')
         self.get_logger().info(f'Subscribed to camera info topic: {camera_info_topic}')
 
@@ -162,7 +156,6 @@ class VlaNavNode(Node):
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.waypoint_marker_pub = self.create_publisher(Marker, 'waypoints_marker', 10)
         self.debug_img_pub = self.create_publisher(Image, '/vla_nav/debug_image', 10)
-        self.image_pub = self.create_publisher(Image, '/image_raw', 10)
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
 
@@ -178,6 +171,8 @@ class VlaNavNode(Node):
         self.get_logger().info(f'Language prompt updated to: {self.lan_prompt}')
 
     def _camera_image_callback(self, msg: Image) -> None:
+        if self.latest_cv_image is None:
+            self.get_logger().info('Received first image from camera.')
         try:
             self.latest_cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
@@ -198,14 +193,7 @@ class VlaNavNode(Node):
 
         # 1. 画像の取得
         cv_image = self.latest_cv_image.copy()
-        
-        # 他ノード（トポロジカルマネージャ等）向けの画像共有
-        try:
-            img_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding="bgr8")
-            self.image_pub.publish(img_msg)
-        except Exception as e:
-            self.get_logger().error(f"Failed to publish image: {e}")
-        
+
         # 1. 画像の前処理
         rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
         pil_image = PILImage.fromarray(rgb_image)
