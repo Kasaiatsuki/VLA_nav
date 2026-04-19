@@ -1,0 +1,44 @@
+# topo_map_nav_node.yaml
+# topo_map_nav.launch.py で使用するパラメータファイル
+
+vla_nav_node:
+  ros__parameters:
+    lan_prompt: "go straight"      # 初期プロンプト（topo_localizer_node が上書きする）
+    interval_ms: 50
+    is_autonomous: false
+    waypoint_select: 7
+    metric_waypoint_spacing: 0.04
+    linear_vel_max: 0.5
+    angular_vel_max: 1.0
+    # Pure Pursuit 制御パラメータ
+    # 曲率が大きい時に線速度を下げる係数 (0=減速なし, 1=曲率1.0で停止)
+    pure_pursuit_decel_gain: 0.5
+    model_path: "/home/kasai/ros2_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
+    model_type: "omnivla-edge"
+    len_traj_pred: 8
+    learn_angle: true
+    context_size: 5
+    obs_encoder: "efficientnet-b0"
+    encoding_size: 256
+    obs_encoding_size: 1024
+    goal_encoding_size: 1024
+    late_fusion: false
+    mha_num_attention_heads: 4
+    mha_num_attention_layers: 4
+    mha_ff_dim_factor: 4
+    clip_type: "ViT-B/32"
+    camera_topic: "/image_raw"
+
+topo_localizer_node:
+  ros__parameters:
+    # imitation_nav 側のインストール済みパスを指定
+    map_path:   "/home/kasai/ros2_ws/install/imitation_nav/share/imitation_nav/config/topo_map/topomap.yaml"
+    model_path: "/home/kasai/ros2_ws/install/imitation_nav/share/imitation_nav/weights/placenet/placenet.pt"
+    image_dir:  "/home/kasai/ros2_ws/install/imitation_nav/share/imitation_nav/config/topo_map/images/"
+    camera_topic: "/image_raw"
+    window_lower: -2
+    window_upper: 3
+    use_observation_based_init: true
+    delta: 5.0
+    # ゴール画像として何ノード先の参照画像を使うか（1=直近の次ノード）
+    goal_node_offset: 1

@@ -53,6 +53,8 @@ class VlaNavNode(Node):
         self.declare_parameter('waypoint_select', 7) 
         self.declare_parameter('metric_waypoint_spacing', 0.3)
         self.declare_parameter('context_size', 5)
+        # Pure Pursuit: 曲率が大きいほど線速度を下げる係数（0=減速なし、1=最大減速）
+        self.declare_parameter('pure_pursuit_decel_gain', 0.5)
 
         self.model_path = self.get_parameter('model_path').value
         self.lan_prompt = self.get_parameter('lan_prompt').value
@@ -63,6 +65,7 @@ class VlaNavNode(Node):
         self.waypoint_select = self.get_parameter('waypoint_select').value
         self.metric_waypoint_spacing = self.get_parameter('metric_waypoint_spacing').value
         self.context_size = self.get_parameter('context_size').value
+        self.pure_pursuit_decel_gain = self.get_parameter('pure_pursuit_decel_gain').value
 
         # --- 描画用投影パラメータ（カメラの取り付け位置） ---
         self.declare_parameter('cam_offset_x', -0.2)  # base_linkから前方(m)
@@ -159,6 +162,10 @@ class VlaNavNode(Node):
         self.create_subscription(Bool, 'autonomous', self._autonomous_callback, 10)
         self.create_subscription(String, 'lan_prompt', self._lan_prompt_callback, 10)
 
+        # ハイブリッドモード: topo_localizer_node から /goal_image を受け取る
+        self.current_goal_image: Optional[PILImage.Image] = None
+        self.create_subscription(Image, '/goal_image', self._goal_image_callback, 1)
+
         self.timer = self.create_timer(self.interval_ms / 1000.0, self.timer_callback)
 
     def _autonomous_callback(self, msg: Bool) -> None:
@@ -177,6 +184,16 @@ class VlaNavNode(Node):
             self.latest_cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         except Exception as e:
             self.get_logger().error(f"Failed to process camera image: {e}")
+
+    def _goal_image_callback(self, msg: Image) -> None:
+        """topo_localizer_node から届く次ノードの参照画像を受け取り PIL に変換して保持する。
+        この画像は timer_callback 内でビジュアルゴールとしてモデルに入力される。
+        """
+        try:
+            cv_img = self.bridge.imgmsg_to_cv2(msg, "rgb8")
+            self.current_goal_image = PILImage.fromarray(cv_img).resize(self.imgsize)
+        except Exception as e:
+            self.get_logger().error(f"Failed to process goal image: {e}")
 
     def _camera_info_callback(self, msg: CameraInfo) -> None:
         if self.cam_p is None:
@@ -220,9 +237,20 @@ class VlaNavNode(Node):
         obj_inst_lan = clip.tokenize(self.lan_prompt, truncate=True).to(self.device)
         goal_pose_dummy = torch.zeros((1, 4)).to(self.device)
         
-        # 言語指示ナビゲーション(Modality ID: 7)
-        goal_image_tensor = transform_images_PIL_mask(image_96, self.mask_360_pil_96).to(self.device)
-        modality_id = torch.tensor([7]).to(self.device)
+        # ---- モダリティ選択 ----
+        # goal_image が届いている場合 → ハイブリッドモード (modality_id=5)
+        #   all_masks[5] = goal_mask_4 : map チャンネルのみマスク
+        #   → 言語（FiLM+ResNet経路）と視覚ゴール（EfficientNet-B0経路）が両方有効
+        # goal_image が届いていない場合 → 言語のみ (modality_id=7)
+        #   all_masks[7] = goal_mask_7 : goal_img と map をマスク
+        if self.current_goal_image is not None:
+            goal_image_tensor = transform_images_PIL_mask(
+                self.current_goal_image, self.mask_360_pil_96).to(self.device)
+            modality_id = torch.tensor([5]).to(self.device)  # ハイブリッド（言語＋視覚）
+        else:
+            goal_image_tensor = transform_images_PIL_mask(
+                image_96, self.mask_360_pil_96).to(self.device)
+            modality_id = torch.tensor([7]).to(self.device)  # 言語のみ
         
         # 4. 推論実行
         t_start = time.time()
@@ -257,35 +285,54 @@ class VlaNavNode(Node):
         self.cmd_vel_pub.publish(twist_msg)
 
     def compute_velocity(self, waypoints):
-        """予測された軌跡に基づいた制御"""
+        """
+        Pure Pursuit コントローラーによる速度指令計算。
+
+        OmniVLA-edge が予測したウェイポイント列（ロボット座標系）から
+        ルックアヘッド点を選び、Pure Pursuit の曲率公式で角速度を求める。
+
+          ロボット前方: x (+dx)
+          ロボット左方: y (+dy)
+
+        Pure Pursuit の公式:
+          L     = sqrt(dx^2 + dy^2)  : ルックアヘッド距離
+          kappa = 2 * dy / L^2       : 目標点への曲率
+          omega = v * kappa          : 角速度
+
+        線速度は曲率に応じて減速する:
+          v = max_v * max(0, 1 - decel_gain * |kappa|)
+        """
         target = waypoints[self.waypoint_select].copy()
         dx, dy, hx, hy = target
+
+        # ウェイポイントをメートル単位に変換
         dx *= self.metric_waypoint_spacing
         dy *= self.metric_waypoint_spacing
-        
-        v_raw = dx * 1.0 
-        
-        # 横方向の偏差に基づいた角速度計算（3.0倍 -> 2.0倍 にマイルド化）
-        if abs(dx) < 1e-8:
-            w_raw = np.arctan2(hy, hx) * 4.0
-        else:
-            w_raw = np.arctan2(dy, dx) * 4.0
-            
-        # --- スムージングの適用 (Low-pass Filter) ---
-        alpha_v = 0 # 50% 以前の値を保持
-        alpha_w = 0 # 70% 以前の値を保持 (旋回はより慎重に)
-        
-        v_smoothed = alpha_v * self.prev_v + (1.0 - alpha_v) * v_raw
-        w_smoothed = alpha_w * self.prev_w + (1.0 - alpha_w) * w_raw
-        
-        self.prev_v = v_smoothed
-        self.prev_w = w_smoothed
-        
-        # 安全のためにクランプ
-        v = np.clip(v_smoothed, 0.0, self.max_v)
-        w = np.clip(w_smoothed, -self.max_w, self.max_w)
-        
-        return float(v), float(w)
+
+        # ルックアヘッド距離
+        L = math.sqrt(dx ** 2 + dy ** 2)
+
+        if L < 1e-6:
+            # ターゲットがほぼ同一点 → 停止
+            return 0.0, 0.0
+
+        if dx < 0.0:
+            # ターゲットが後方（モデル出力が後退を示している場合）→ 停止
+            return 0.0, 0.0
+
+        # Pure Pursuit 曲率: κ = 2y / L²
+        kappa = 2.0 * dy / (L ** 2)
+
+        # 曲率に応じた線速度の減速
+        # decel_gain が大きいほど、曲がる時に大きく減速する
+        v = self.max_v * max(0.0, 1.0 - self.pure_pursuit_decel_gain * abs(kappa))
+        v = float(np.clip(v, 0.0, self.max_v))
+
+        # 角速度: ω = v × κ
+        w = v * kappa
+        w = float(np.clip(w, -self.max_w, self.max_w))
+
+        return v, w
 
     def publish_waypoints_marker(self, waypoints):
         marker = Marker()
