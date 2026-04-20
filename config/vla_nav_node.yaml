@@ -1,13 +1,13 @@
 vla_nav_node:
   ros__parameters:
-    lan_prompt: "please human following"
+    lan_prompt: "follow the person ahead while maintaining a certain distance"
     interval_ms: 50
     is_autonomous: false
     waypoint_select: 7
-    metric_waypoint_spacing: 0.04
+    metric_waypoint_spacing: 1.0
     linear_vel_max: 0.5
     angular_vel_max: 1.0
-    model_path: "/home/orne/kasai_ws/src/VLA_nav/omnivla/inference/omnivla-edge/omnivla-edge.pth"
+    model_path: "/home/orne/kasai_ws/src/VLA_nav/checkpoints_edge/edge-vla-finetune-v1/omnivla-edge-finetuned.pth"
     model_type: "omnivla-edge"
     len_traj_pred: 8
     learn_angle: true
@@ -17,8 +17,8 @@ vla_nav_node:
     obs_encoding_size: 1024
     goal_encoding_size: 1024
     late_fusion: false
-    mha_num_attention_heads: 4
-    mha_num_attention_layers: 4
+    mha_num_attention_heads: 2
+    mha_num_attention_layers: 2
     mha_ff_dim_factor: 4
     clip_type: "ViT-B/32"
 

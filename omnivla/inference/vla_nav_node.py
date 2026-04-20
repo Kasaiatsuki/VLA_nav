@@ -127,11 +127,11 @@ class VlaNavNode(Node):
             "clip_type": self.get_parameter('clip_type').value
         }
 
-        self.imgsize = (96, 96)
+        self.imgsize = (192, 192)
         self.imgsize_clip = (224, 224)
         self.context_size = self.get_parameter('context_size').value
         self.context_queue = []
-        self.mask_360_pil_96 = np.ones((96, 96, 3), dtype=np.float32)
+        self.mask_360_pil_192 = np.ones((192, 192, 3), dtype=np.float32)
         self.mask_360_pil_224 = np.ones((224, 224, 3), dtype=np.float32)
         self.prev_v = 0.0
         self.prev_w = 0.0
@@ -197,31 +197,31 @@ class VlaNavNode(Node):
         # 1. 画像の前処理
         rgb_image = cv2.cvtColor(cv_image, cv2.COLOR_BGR2RGB)
         pil_image = PILImage.fromarray(rgb_image)
-        image_96 = pil_image.resize(self.imgsize)
+        image_192 = pil_image.resize(self.imgsize)
         image_224 = pil_image.resize(self.imgsize_clip)
         
         # 2. コンテキストキューの更新
         if len(self.context_queue) == 0:
-            self.context_queue = [image_96] * (self.context_size + 1)
+            self.context_queue = [image_192] * (self.context_size + 1)
         else:
-            self.context_queue.append(image_96)
+            self.context_queue.append(image_192)
             if len(self.context_queue) > (self.context_size + 1):
                 self.context_queue.pop(0)
         
         # 3. テンソル変換
-        obs_images = transform_images_PIL_mask(self.context_queue, self.mask_360_pil_96).to(self.device)
+        obs_images = transform_images_PIL_mask(self.context_queue, self.mask_360_pil_192).to(self.device)
         obs_images_split = torch.split(obs_images, 3, dim=1)
         obs_image_cur = obs_images_split[-1]
         obs_images_cat = torch.cat(obs_images_split, dim=1)
         cur_large_img = transform_images_PIL_mask(image_224, self.mask_360_pil_224).to(self.device)
         
-        satellite_dummy = torch.zeros((1, 3, 96, 96)).to(self.device)
+        satellite_dummy = torch.zeros((1, 3, 192, 192)).to(self.device)
         map_images = torch.cat((satellite_dummy, satellite_dummy, obs_image_cur), axis=1)
         obj_inst_lan = clip.tokenize(self.lan_prompt, truncate=True).to(self.device)
         goal_pose_dummy = torch.zeros((1, 4)).to(self.device)
         
         # 言語指示ナビゲーション(Modality ID: 7)
-        goal_image_tensor = transform_images_PIL_mask(image_96, self.mask_360_pil_96).to(self.device)
+        goal_image_tensor = transform_images_PIL_mask(image_192, self.mask_360_pil_192).to(self.device)
         modality_id = torch.tensor([7]).to(self.device)
         
         # 4. 推論実行
